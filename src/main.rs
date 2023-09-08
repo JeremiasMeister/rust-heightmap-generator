@@ -2,13 +2,26 @@ extern crate image;
 extern crate dirs;
 
 
-use image::{ImageBuffer, Rgba};
+use image::{ImageBuffer, Rgba,Pixel};
 use noise::{NoiseFn, Perlin};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use slint::{slint, Model, VecModel,SharedPixelBuffer,Rgba8Pixel};
 
 const IMAGE_SIZE: u32 = 256;
+const COLORS: [Rgba<u8>; 9] = [
+    Rgba([0, 0, 255, 255]),   // Blue for water
+    Rgba([0, 0, 255, 255]),   // Blue for water
+    Rgba([0, 128, 0, 255]),   // More Green for more grasslands
+    Rgba([0, 128, 0, 255]),   // Even More Green
+    Rgba([0, 128, 0, 255]),   // And More Green
+    Rgba([139, 69, 19, 255]), // Brown for hills
+    Rgba([105, 105, 105, 255]), // Dark Gray for lower mountains
+    Rgba([192, 192, 192, 255]), // Light Gray for higher mountains
+    Rgba([255, 255, 255, 255])  // White for mountain tips
+];
+
+
 
 slint! {
     import { Button , VerticalBox, Slider, HorizontalBox, CheckBox, TextEdit, ComboBox} from "std-widgets.slint";
@@ -37,11 +50,13 @@ slint! {
         out property <float> offset_y <=> ofy.value;
         out property <float> seed <=> sd.value;
         in-out property <image> image <=> img.source;
+        in-out property <image> colormap <=> colormap.source;
         out property <[LayerParams]> layers: [];
         out property <string> filename <=> filename.text;
 
         out property <int> erosion_mode <=> erosion_mode.current-index;
         out property <float> erosion_iterations <=> erosion_iterations.value;
+        out property <float> talus_angle <=> talus_angle.value;
 
         out property <bool> raise_water_level <=> raise_water_level.checked;
         out property <float> water_level <=> water_level.value;
@@ -171,7 +186,7 @@ slint! {
                         background: #161616;
                         border-radius: 10px;
                         VerticalBox {
-                            Text {text: "Termal Erosion"; height: 25px;}
+                            Text {text: "Thermal Erosion"; height: 25px;}
                             erosion_mode:=ComboBox {
                                 model: ["None", "Standart", "With Talus"];
                                 current-index: 0;
@@ -183,6 +198,12 @@ slint! {
                             HorizontalBox {
                                 Text {text: "Iterations"; vertical-alignment: center;}
                                 erosion_iterations:=Slider {value: 1;minimum: 1;maximum: 100; height: 25px; changed => {
+                                    root.ui_changed();
+                                }}
+                            }
+                            HorizontalBox {
+                                Text {text: "Talus Angle"; vertical-alignment: center;}
+                                talus_angle:=Slider {value: 0.01;minimum: 0.0;maximum: 0.1; height: 25px; changed => {
                                     root.ui_changed();
                                 }}
                             }
@@ -211,6 +232,7 @@ slint! {
                 }
                 VerticalBox {
                     img:=Image {source: @image-url("images/reload_icon.png");min-width: 256px;min-height: 256px;}
+                    colormap:=Image {source: @image-url("images/reload_icon.png");min-width: 256px;min-height: 256px;}
                     HorizontalBox {
                         Text {
                             text: "Filename";
@@ -261,14 +283,18 @@ fn main() {
     let app_add_weak = app_weak.clone();
     let app_remove_weak = app_weak.clone();
     let app_export_weak = app_weak.clone();    
-    let main_buffer = Arc::new(Mutex::new(ImageBuffer::new(IMAGE_SIZE, IMAGE_SIZE)));
+    let main_buffer: Arc<Mutex<ImageBuffer<Rgba<u8>, Vec<u8>>>> = Arc::new(Mutex::new(ImageBuffer::new(IMAGE_SIZE, IMAGE_SIZE)));
+    let main_color_buffer: Arc<Mutex<ImageBuffer<Rgba<u8>, Vec<u8>>>> = Arc::new(Mutex::new(ImageBuffer::new(IMAGE_SIZE, IMAGE_SIZE)));
     let export_main_buffer = Arc::clone(&main_buffer);
+    let export_main_color_buffer = Arc::clone(&main_color_buffer);
 
     app.on_ui_changed({
         let main_buffer = Arc::clone(&main_buffer);
+        let main_color_buffer = Arc::clone(&main_color_buffer);
         move || {
             let clicked_handle = app_weak.upgrade().unwrap();
-            let main_buffer = Arc::clone(&main_buffer);      
+            let main_buffer = Arc::clone(&main_buffer);
+            let main_color_buffer = Arc::clone(&main_color_buffer);
             let scale = clicked_handle.get_scale() as f64;
             let offset_x = clicked_handle.get_offset_x() as f64;
             let offset_y = clicked_handle.get_offset_y() as f64;
@@ -277,6 +303,7 @@ fn main() {
             let layer_parms = model_rc.as_any().downcast_ref::<VecModel<LayerParams>>().unwrap();
             let erosion_mode = clicked_handle.get_erosion_mode() as i32;
             let erosion_iterations = clicked_handle.get_erosion_iterations() as usize;
+            let talus_angle = clicked_handle.get_talus_angle() as f32;
             let raise_water_level = clicked_handle.get_raise_water_level() as bool;
             let water_level = clicked_handle.get_water_level() as u8;
 
@@ -294,27 +321,36 @@ fn main() {
 
             let handle = clicked_handle.as_weak();
             thread::spawn(move || {     
-                let mut locked_buffer = main_buffer.lock().unwrap();       
+                let mut locked_buffer = main_buffer.lock().unwrap();
+                let mut locked_color_buffer = main_color_buffer.lock().unwrap();
                 let mut buffer = generate_perlin_noise_buffer(IMAGE_SIZE,IMAGE_SIZE,offset_x,offset_y,scale,1.0,seed);
                 for layer in layers {
                     let layer_buffer = generate_perlin_noise_buffer(IMAGE_SIZE,IMAGE_SIZE,layer.offset_x as f64,layer.offset_y as f64,layer.scale as f64,layer.opacity as f64,layer.seed as u32);
                     buffer = blend_buffers(&buffer,&layer_buffer,layer.blend_mode);
-                }
+                } 
+                let mut colored_buffer = colorize_buffer(&buffer);               
 
                 if erosion_mode != 0 {
-                    buffer = thermal_erosion(&buffer, erosion_iterations, 0.1, erosion_mode);
+                    thermal_erosion(&mut buffer, &mut colored_buffer,  erosion_iterations, talus_angle, erosion_mode);
                 }
 
                 if raise_water_level {
                     clamp_image_buffer(& mut buffer, water_level, 255);
                 }
+                
+                
 
                 *locked_buffer = buffer.clone();
+                *locked_color_buffer = colored_buffer.clone();
                 let pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&buffer.into_raw().as_slice(), IMAGE_SIZE, IMAGE_SIZE); 
+                let colored_pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&colored_buffer.into_raw().as_slice(), IMAGE_SIZE, IMAGE_SIZE);
                 let weak_copy = handle.clone();
                 slint::invoke_from_event_loop(move || {
                     let img = slint::Image::from_rgba8(pixel_buffer);
-                    weak_copy.upgrade().unwrap().set_image(img);
+                    let colormap = slint::Image::from_rgba8(colored_pixel_buffer);
+                    let weak = weak_copy.upgrade().unwrap();
+                    weak.set_image(img);
+                    weak.set_colormap(colormap);
                 })
             });
         }
@@ -346,8 +382,10 @@ fn main() {
     app.on_export_btn_clicked(move || {
         let clicked_handle = app_export_weak.upgrade().unwrap();
         let locked_buffer = export_main_buffer.lock().unwrap();
+        let locked_color_buffer = export_main_color_buffer.lock().unwrap();
         let filename = clicked_handle.get_filename();
-        save_image_to_desktop(&*locked_buffer, filename.as_str());
+        save_image_to_desktop(&*locked_buffer, filename.as_str(),"height");
+        save_image_to_desktop(&*locked_color_buffer, filename.as_str(), "color");
     });
     app.run().unwrap();
 }
@@ -404,11 +442,11 @@ fn blend_buffers(buffer_a: &ImageBuffer<Rgba<u8>, Vec<u8>>, buffer_b: &ImageBuff
     })
 }
 
-fn save_image_to_desktop(buffer: &ImageBuffer<Rgba<u8>, Vec<u8>>, filename: &str){
+fn save_image_to_desktop(buffer: &ImageBuffer<Rgba<u8>, Vec<u8>>, filename: &str, suffix: &str){
     let desktop_path = dirs::desktop_dir();
     match desktop_path {
         Some(path) => {            
-            let full_path = path.join(format!("{}.png", filename));
+            let full_path = path.join(format!("{}_{}.png", filename, suffix));
             println!("Desktop path: {}", full_path.display());
             match buffer.save(full_path) {
                 Ok(_) => {
@@ -427,70 +465,73 @@ fn save_image_to_desktop(buffer: &ImageBuffer<Rgba<u8>, Vec<u8>>, filename: &str
     
 }
 
-fn thermal_erosion(img: &ImageBuffer<Rgba<u8>, Vec<u8>>, iterations: usize, talus_angle: f32, erosion_mode: i32) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
-    let mut eroded_img = img.clone();
-    let (width, height) = img.dimensions();
+// Function to decide if erosion should happen based on the pixels and the erosion mode
+fn should_erode(center: Rgba<u8>, neighbor: Rgba<u8>, talus_angle: f32, erosion_mode: i32) -> bool {
+    for channel in 0..3 {
+        match erosion_mode {
+            0 => { return false; },
+            1 => {
+                if neighbor[channel] < center[channel] {
+                    return true;
+                }
+            },
+            2 => {
+                let delta = (center[channel] as f32 - neighbor[channel] as f32) / 255.0;
+                if delta > talus_angle {
+                    return true;
+                }
+            },
+            _ => { panic!("Invalid erosion mode"); }
+        }
+    }
+    false
+}
+
+fn thermal_erosion(
+    heightmap: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    colormap: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    iterations: usize,
+    talus_angle: f32,
+    erosion_mode: i32,
+) {
+    let (width, height) = heightmap.dimensions();
 
     for _ in 0..iterations {
-        let mut temp_img = eroded_img.clone();  // Temporary image to store updates
+        let temp_heightmap = heightmap.clone(); // Temporary heightmap to store updates
+        let temp_colormap = colormap.clone(); // Temporary colormap to store updates
 
         for y in 1..(height - 1) {
             for x in 1..(width - 1) {
-                let center_pixel = eroded_img.get_pixel(x, y);
-                let mut updated_pixel = center_pixel.clone();
+                let center_pixel = temp_heightmap.get_pixel(x, y);
                 let mut changed = false;
 
-                // Loop over the 8 neighbors
                 for dx in -1..=1 {
                     for dy in -1..=1 {
                         if dx == 0 && dy == 0 {
                             continue;
                         }
 
-                        let neighbor_pixel = eroded_img.get_pixel((x as i32 + dx) as u32, (y as i32 + dy) as u32);
+                        let neighbor_pixel = temp_heightmap.get_pixel((x as i32 + dx) as u32, (y as i32 + dy) as u32);
+                        let neighbor_color = temp_colormap.get_pixel((x as i32 + dx) as u32, (y as i32 + dy) as u32);
 
-                        // Loop over RGB channels
-                        for channel in 0..3 {
-                            match erosion_mode {
-                                0 => {
-                                    // No erosion
-                                },
-                                1 => {
-                                    // Standard erosion algorithm
-                                    if neighbor_pixel[channel] < center_pixel[channel] {
-                                        let delta = center_pixel[channel] - neighbor_pixel[channel];
-                                        updated_pixel[channel] = center_pixel[channel] - delta / 2;
-                                        changed = true;
-                                    }
-                                },
-                                2 => {
-                                    // Erosion algorithm with talus angle consideration
-                                    let delta = (center_pixel[channel] as f32 - neighbor_pixel[channel] as f32) / 255.0;
-                                    if delta > talus_angle {
-                                        let delta_u8 = ((delta - talus_angle) * 255.0) as u8;
-                                        updated_pixel[channel] = center_pixel[channel] - delta_u8 / 2;
-                                        changed = true;
-                                    }
-                                },
-                                _ => {
-                                    panic!("Invalid erosion mode");
-                                }
-                            }
+                        if should_erode(center_pixel.clone(), neighbor_pixel.clone(), talus_angle, erosion_mode) {
+                            // Update both heightmap and colormap
+                            heightmap.put_pixel(x, y, neighbor_pixel.clone());
+                            colormap.put_pixel(x, y, neighbor_color.clone());
+                            changed = true;
+                            break;
                         }
-
-                        if changed {
-                            temp_img.put_pixel(x, y, updated_pixel);
-                        }
+                    }
+                    if changed {
+                        break;
                     }
                 }
             }
         }
-
-        eroded_img = temp_img;
     }
-
-    eroded_img
 }
+
+
 
 fn clamp_image_buffer(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, min: u8, max: u8) {
     let (width, height) = img.dimensions();
@@ -503,4 +544,39 @@ fn clamp_image_buffer(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, min: u8, max: u8
             }
         }
     }
+}
+
+fn lerp(a: u8, b: u8, t: f32) -> u8 {
+    ((1.0 - t) * a as f32 + t * b as f32) as u8
+}
+
+fn colorize_buffer(img: &ImageBuffer<Rgba<u8>, Vec<u8>>) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+    let (width, height) = img.dimensions();
+    let mut colorized_img = img.clone();
+    
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = img.get_pixel(x, y);
+            let luminance = pixel.to_luma()[0] as f32 / 255.0;
+            
+            // Calculate indices and interpolation factor
+            let t = luminance * (COLORS.len() as f32 - 1.0);
+            let index1 = t.floor() as usize;
+            let index2 = (index1 + 1).min(COLORS.len() - 1);
+            let factor = t - index1 as f32;
+            
+            let color1 = COLORS[index1];
+            let color2 = COLORS[index2];
+            
+            // Interpolate between the two colors
+            let mut new_color = [0u8; 4];
+            for i in 0..4 {
+                new_color[i] = lerp(color1[i], color2[i], factor);
+            }
+            
+            colorized_img.put_pixel(x, y, Rgba(new_color));
+        }
+    }
+    
+    colorized_img
 }
