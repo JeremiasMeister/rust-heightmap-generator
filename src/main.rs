@@ -1,27 +1,25 @@
 extern crate image;
 extern crate dirs;
-
-
 use image::{ImageBuffer, Rgba,Pixel};
 use noise::{NoiseFn, Perlin};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use slint::{slint, Model, VecModel,SharedPixelBuffer,Rgba8Pixel};
+use rand::Rng;
 
 const IMAGE_SIZE: u32 = 256;
-const COLORS: [Rgba<u8>; 9] = [
-    Rgba([0, 0, 255, 255]),   // Blue for water
-    Rgba([0, 0, 255, 255]),   // Blue for water
-    Rgba([0, 128, 0, 255]),   // More Green for more grasslands
-    Rgba([0, 128, 0, 255]),   // Even More Green
-    Rgba([0, 128, 0, 255]),   // And More Green
+const COLORS: [Rgba<u8>; 10] = [
+    Rgba([0, 0, 200, 255]),   // Blue for water
+    Rgba([0, 200, 255, 255]),   // Blue for water
+    Rgba([0, 128, 0, 255]),   // Green for grasslands
+    Rgba([60, 160, 0, 255]),   // Green for grasslands
+    Rgba([100, 140, 0, 255]),   // Green for grasslands
     Rgba([139, 69, 19, 255]), // Brown for hills
+    Rgba([139, 100, 60, 255]), // Brown for hills
     Rgba([105, 105, 105, 255]), // Dark Gray for lower mountains
     Rgba([192, 192, 192, 255]), // Light Gray for higher mountains
     Rgba([255, 255, 255, 255])  // White for mountain tips
 ];
-
-
 
 slint! {
     import { Button , VerticalBox, Slider, HorizontalBox, CheckBox, TextEdit, ComboBox} from "std-widgets.slint";
@@ -58,8 +56,13 @@ slint! {
         out property <float> erosion_iterations <=> erosion_iterations.value;
         out property <float> talus_angle <=> talus_angle.value;
 
-        out property <bool> raise_water_level <=> raise_water_level.checked;
-        out property <float> water_level <=> water_level.value;
+        out property <bool> flatten_enabled <=> flatten_enabled.checked;
+        out property <float> ground_level <=> ground_level.value;
+
+        out property <bool> calculate_rivers <=> river_enabled.checked;
+        out property <float> river_iterations <=> river_iterations.value;
+        out property <float> erosion_factor <=> erosion_factor.value;
+        out property <float> river_amount <=> river_amount.value;
 
         Rectangle {
             background: #292929;
@@ -188,7 +191,7 @@ slint! {
                         VerticalBox {
                             Text {text: "Thermal Erosion"; height: 25px;}
                             erosion_mode:=ComboBox {
-                                model: ["None", "Standart", "With Talus"];
+                                model: ["None", "Standard", "With Talus"];
                                 current-index: 0;
                                 height: 25px;
                                 selected => {
@@ -197,7 +200,7 @@ slint! {
                             }
                             HorizontalBox {
                                 Text {text: "Iterations"; vertical-alignment: center;}
-                                erosion_iterations:=Slider {value: 1;minimum: 1;maximum: 100; height: 25px; changed => {
+                                erosion_iterations:=Slider {value: 5;minimum: 5;maximum: 100; height: 25px; changed => {
                                     root.ui_changed();
                                 }}
                             }
@@ -212,22 +215,53 @@ slint! {
                     Rectangle {
                         background: #161616;
                         border-radius: 10px;
-                        VerticalBox {
-                            Text {text: "Water"; height: 25px;}
+                        VerticalBox {                            
+                            Text {text: "River Flow"; height: 25px;}
                             HorizontalBox {
-                                Text {text: "Raise Water Level"; vertical-alignment: center; height: 25px;}
-                                raise_water_level:=CheckBox {checked: false; height: 25px; toggled => {
+                                Text {text: "Calculate Rivers"; vertical-alignment: center;}
+                                river_enabled:=CheckBox {enabled: erosion-mode.current-index != 0 ;checked: false; toggled => {
                                     root.ui_changed();
                                 }}
                             }
                             HorizontalBox {
-                                Text {text: "Water Level"; vertical-alignment: center; height: 25px;}
-                                water_level:=Slider {height: 25px;value: 0.5;minimum: 0.0;maximum: 255.0; changed => {
+                                Text {text: "Iterations"; vertical-alignment: center;}
+                                river_iterations:=Slider {enabled: erosion-mode.current-index != 0 ;value: 1;minimum: 1;maximum: 256; height: 25px; changed => {
+                                    root.ui_changed();
+                                }}
+                            }
+                            HorizontalBox {
+                                Text {text: "Erosion Factor"; vertical-alignment: center;}
+                                erosion_factor:=Slider {enabled: erosion-mode.current-index != 0 ;value: 1;minimum: 1;maximum: 100; height: 25px; changed => {
+                                    root.ui_changed();
+                                }}
+                            }
+                            HorizontalBox {
+                                Text {text: "River Amount"; vertical-alignment: center;}
+                                river_amount:=Slider {enabled: erosion-mode.current-index != 0 ;value: 1;minimum: 1;maximum: 100; height: 25px; changed => {
                                     root.ui_changed();
                                 }}
                             }
                         }
                     }
+                    Rectangle {
+                        background: #161616;
+                        border-radius: 10px;
+                        VerticalBox {
+                            Text {text: "Flatten Ground"; height: 25px;}
+                            HorizontalBox {
+                                Text {text: "Flatten Enabled"; vertical-alignment: center; height: 25px;}
+                                flatten_enabled:=CheckBox {checked: false; height: 25px; toggled => {
+                                    root.ui_changed();
+                                }}
+                            }
+                            HorizontalBox {
+                                Text {text: "Ground Level"; vertical-alignment: center; height: 25px;}
+                                ground_level:=Slider {height: 25px;value: 0.5;minimum: 0.0;maximum: 255.0; changed => {
+                                    root.ui_changed();
+                                }}
+                            }
+                        }
+                    }                   
                                         
                 }
                 VerticalBox {
@@ -304,8 +338,12 @@ fn main() {
             let erosion_mode = clicked_handle.get_erosion_mode() as i32;
             let erosion_iterations = clicked_handle.get_erosion_iterations() as usize;
             let talus_angle = clicked_handle.get_talus_angle() as f32;
-            let raise_water_level = clicked_handle.get_raise_water_level() as bool;
-            let water_level = clicked_handle.get_water_level() as u8;
+            let flatten_enabled = clicked_handle.get_flatten_enabled() as bool;
+            let ground_level = clicked_handle.get_ground_level() as u8;
+            let calculate_rivers = clicked_handle.get_calculate_rivers() as bool;
+            let river_iterations = clicked_handle.get_river_iterations() as usize;
+            let erosion_factor = clicked_handle.get_erosion_factor() as i16;
+            let river_amount = clicked_handle.get_river_amount() as usize;
 
             let mut layers: Vec<Layers> = Vec::new();
             for layer in layer_parms.iter() {
@@ -320,38 +358,56 @@ fn main() {
             }
 
             let handle = clicked_handle.as_weak();
-            thread::spawn(move || {     
-                let mut locked_buffer = main_buffer.lock().unwrap();
-                let mut locked_color_buffer = main_color_buffer.lock().unwrap();
-                let mut buffer = generate_perlin_noise_buffer(IMAGE_SIZE,IMAGE_SIZE,offset_x,offset_y,scale,1.0,seed);
-                for layer in layers {
-                    let layer_buffer = generate_perlin_noise_buffer(IMAGE_SIZE,IMAGE_SIZE,layer.offset_x as f64,layer.offset_y as f64,layer.scale as f64,layer.opacity as f64,layer.seed as u32);
-                    buffer = blend_buffers(&buffer,&layer_buffer,layer.blend_mode);
-                } 
-                let mut colored_buffer = colorize_buffer(&buffer);               
-
-                if erosion_mode != 0 {
-                    thermal_erosion(&mut buffer, &mut colored_buffer,  erosion_iterations, talus_angle, erosion_mode);
+            thread::spawn(move || {                
+                let locked_buffer_result = main_buffer.lock();
+                let locked_color_buffer_result = main_color_buffer.lock();
+                match (locked_buffer_result, locked_color_buffer_result) {
+                    (Ok(mut locked_buffer), Ok(mut locked_color_buffer)) => {
+                        let mut buffer = generate_perlin_noise_buffer(IMAGE_SIZE,IMAGE_SIZE,offset_x,offset_y,scale,1.0,seed);
+                        for layer in layers {
+                            let layer_buffer = generate_perlin_noise_buffer(IMAGE_SIZE,IMAGE_SIZE,layer.offset_x as f64,layer.offset_y as f64,layer.scale as f64,layer.opacity as f64,layer.seed as u32);
+                            buffer = blend_buffers(&buffer,&layer_buffer,layer.blend_mode);
+                        }
+                        if flatten_enabled {
+                            clamp_image_buffer(& mut buffer, ground_level, 255);
+                        }
+                        let mut colored_buffer = colorize_buffer(&buffer);
+                        if erosion_mode != 0 {
+                            thermal_erosion(&mut buffer, &mut colored_buffer,  erosion_iterations, talus_angle, erosion_mode);
+                        }
+                        if calculate_rivers {
+                            match simulate_river_flow(&mut buffer, &mut colored_buffer, river_iterations, erosion_factor, river_amount){
+                                Ok(_) => {},
+                                Err(e) => {
+                                    println!("Error: {}", e);
+                                }
+                            }
+                        }
+                        *locked_buffer = buffer.clone();
+                        *locked_color_buffer = colored_buffer.clone();
+                        let pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&buffer.into_raw().as_slice(), IMAGE_SIZE, IMAGE_SIZE); 
+                        let colored_pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&colored_buffer.into_raw().as_slice(), IMAGE_SIZE, IMAGE_SIZE);
+                        let weak_copy = handle.clone();
+                        match slint::invoke_from_event_loop(move || {
+                            let img = slint::Image::from_rgba8(pixel_buffer);
+                            let colormap = slint::Image::from_rgba8(colored_pixel_buffer);
+                            let weak = weak_copy.upgrade().unwrap();
+                            weak.set_image(img);
+                            weak.set_colormap(colormap);
+                        }){
+                            Ok(_) => {},
+                            Err(e) => {
+                                println!("Error: {}", e);
+                            }
+                        };
+                    }
+                    (Err(e), _) => {
+                        println!("Error in Height Buffer: {}", e);
+                    },
+                    (_, Err(e)) => {
+                        println!("Error in Color Buffer: {}", e);
+                    }
                 }
-
-                if raise_water_level {
-                    clamp_image_buffer(& mut buffer, water_level, 255);
-                }
-                
-                
-
-                *locked_buffer = buffer.clone();
-                *locked_color_buffer = colored_buffer.clone();
-                let pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&buffer.into_raw().as_slice(), IMAGE_SIZE, IMAGE_SIZE); 
-                let colored_pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&colored_buffer.into_raw().as_slice(), IMAGE_SIZE, IMAGE_SIZE);
-                let weak_copy = handle.clone();
-                slint::invoke_from_event_loop(move || {
-                    let img = slint::Image::from_rgba8(pixel_buffer);
-                    let colormap = slint::Image::from_rgba8(colored_pixel_buffer);
-                    let weak = weak_copy.upgrade().unwrap();
-                    weak.set_image(img);
-                    weak.set_colormap(colormap);
-                })
             });
         }
     });
@@ -579,4 +635,70 @@ fn colorize_buffer(img: &ImageBuffer<Rgba<u8>, Vec<u8>>) -> ImageBuffer<Rgba<u8>
     }
     
     colorized_img
+}
+
+fn simulate_river_flow(
+    heightmap: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    colormap: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    rain_iterations: usize,
+    erosion_factor: i16,
+    num_rivers: usize,
+) -> Result<(), String> {
+    let (width, height) = heightmap.dimensions();
+    let mut rng = rand::thread_rng();
+    
+    let mut heightmap_i16: Vec<Vec<i16>> = vec![vec![0; height as usize]; width as usize];
+    for x in 0..width {
+        for y in 0..height {
+            heightmap_i16[x as usize][y as usize] = heightmap.get_pixel(x, y)[1] as i16;
+        }
+    }
+
+    for _ in 0..num_rivers {
+        let mut x = rng.gen_range(1..width - 1);
+        let mut y = rng.gen_range(1..height - 1);
+
+        for _ in 0..rain_iterations {
+            if x > 0 && x < width - 1 && y > 0 && y < height - 1 {
+                let center_height = heightmap_i16[x as usize][y as usize];
+                let mut min_height = center_height;
+                let mut min_x = x;
+                let mut min_y = y;
+
+                for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        if dx == 0 && dy == 0 {
+                            continue;
+                        }
+                        let neighbor_x = (x as i32 + dx) as usize;
+                        let neighbor_y = (y as i32 + dy) as usize;
+
+                        if neighbor_x >= width as usize || neighbor_y >= height as usize {
+                            continue;
+                        }
+
+                        let neighbor_height = heightmap_i16[neighbor_x][neighbor_y];
+                        if neighbor_height < min_height {
+                            min_height = neighbor_height;
+                            min_x = neighbor_x as u32;
+                            min_y = neighbor_y as u32;
+                        }
+                    }
+                }
+
+                if min_height < center_height {
+                    let new_height = min_height.saturating_sub(erosion_factor);
+                    //heightmap_i16[min_x as usize][min_y as usize] = new_height;
+
+                    let new_height_u8 = std::cmp::max(0, std::cmp::min(new_height, 255)) as u8;
+                    heightmap.put_pixel(min_x, min_y, Rgba([new_height_u8, new_height_u8, new_height_u8, 255]));
+                    colormap.put_pixel(min_x, min_y, COLORS[0]);
+                    x = min_x;
+                    y = min_y;
+                }
+            }
+        }
+    }
+    
+    Ok(())
 }
