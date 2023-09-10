@@ -1,13 +1,16 @@
 extern crate image;
 extern crate dirs;
-use image::{ImageBuffer, Rgba,Pixel};
+use image::imageops::FilterType::Lanczos3;
+use image::{ImageBuffer, Rgba, Pixel, imageops::FilterType};
 use noise::{NoiseFn, Perlin};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::error::Error;
 use slint::{slint, Model, VecModel,SharedPixelBuffer,Rgba8Pixel};
 use rand::Rng;
 
 const IMAGE_SIZE: u32 = 256;
+const EXPORT_IMAGE_SIZE: (u32,u32) = (4096,4096);
 const COLORS: [Rgba<u8>; 10] = [
     Rgba([0, 0, 200, 255]),   // Blue for water
     Rgba([0, 200, 255, 255]),   // Blue for water
@@ -440,8 +443,22 @@ fn main() {
         let locked_buffer = export_main_buffer.lock().unwrap();
         let locked_color_buffer = export_main_color_buffer.lock().unwrap();
         let filename = clicked_handle.get_filename();
-        save_image_to_desktop(&*locked_buffer, filename.as_str(),"height");
-        save_image_to_desktop(&*locked_color_buffer, filename.as_str(), "color");
+        let mut buffer = locked_buffer.clone();
+        let mut color_buffer = locked_color_buffer.clone();
+        match scale_image(&mut buffer, EXPORT_IMAGE_SIZE, Lanczos3){
+            Ok(_) => {},
+            Err(e) => {
+                println!("Error: {}", e);
+            }
+        }
+        match scale_image(&mut color_buffer, EXPORT_IMAGE_SIZE, Lanczos3){
+            Ok(_) => {},
+            Err(e) => {
+                println!("Error: {}", e);
+            }
+        }
+        save_image_to_desktop(&buffer, filename.as_str(),"height");
+        save_image_to_desktop(&color_buffer, filename.as_str(), "color");
     });
     app.run().unwrap();
 }
@@ -477,12 +494,16 @@ fn blend_buffers(buffer_a: &ImageBuffer<Rgba<u8>, Vec<u8>>, buffer_b: &ImageBuff
             let channel_b = pixel_b[i] as f32 / 255.0;
             
             match blend_mode {
+                // Blend
                 0 => {
                     blended_pixel[i] = ((channel_a * (1.0 - alpha_b) + channel_b * alpha_b) * 255.0).min(255.0) as u8;
-                },                
-                1 => {
-                    blended_pixel[i] = ((channel_a * channel_b * new_alpha) * 255.0).min(255.0) as u8;
                 },
+                // Multiply                
+                1 => {
+                    let blended_channel = channel_a * (1.0 - alpha_b) + channel_a * channel_b * alpha_b; // Interpolate based on alpha_b
+                    blended_pixel[i] = (blended_channel * 255.0).min(255.0) as u8;
+                },
+                //
                 2 => {
                     blended_pixel[i] = ((channel_a * alpha_a + channel_b * alpha_b) * 255.0).min(255.0) as u8;
                 },
@@ -700,5 +721,19 @@ fn simulate_river_flow(
         }
     }
     
+    Ok(())
+}
+
+
+fn scale_image(buffer: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, target_size: (u32, u32), scale_method: FilterType) -> Result<(), Box<dyn Error>> {
+    let (target_width, target_height) = target_size;
+
+    if target_width == 0 || target_height == 0 {
+        return Err("Target size should be greater than zero".into());
+    }
+
+    let scaled_image = image::imageops::resize(buffer, target_width, target_height, scale_method);
+    *buffer = scaled_image;
+
     Ok(())
 }
