@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::error::Error;
 use slint::{slint, Model, VecModel,SharedPixelBuffer,Rgba8Pixel};
-use rand::Rng;
+use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
 
 const IMAGE_SIZE: u32 = 256;
 const EXPORT_IMAGE_SIZE: (u32,u32) = (4096,4096);
@@ -66,6 +67,7 @@ slint! {
         out property <float> river_iterations <=> river_iterations.value;
         out property <float> erosion_factor <=> erosion_factor.value;
         out property <float> river_amount <=> river_amount.value;
+        out property <float> river_seed <=> river_seed.value;
 
         Rectangle {
             background: #292929;
@@ -244,6 +246,12 @@ slint! {
                                     root.ui_changed();
                                 }}
                             }
+                            HorizontalBox {
+                                Text {text: "Seed"; vertical-alignment: center;}
+                                river_seed:=Slider {enabled: erosion-mode.current-index != 0 ;value: 1;minimum: 1;maximum: 5000; height: 25px; changed => {
+                                    root.ui_changed();
+                                }}
+                            }
                         }
                     }
                     Rectangle {
@@ -347,6 +355,7 @@ fn main() {
             let river_iterations = clicked_handle.get_river_iterations() as usize;
             let erosion_factor = clicked_handle.get_erosion_factor() as i16;
             let river_amount = clicked_handle.get_river_amount() as usize;
+            let river_seed = clicked_handle.get_river_seed() as u64;
 
             let mut layers: Vec<Layers> = Vec::new();
             for layer in layer_parms.iter() {
@@ -379,7 +388,7 @@ fn main() {
                             thermal_erosion(&mut buffer, &mut colored_buffer,  erosion_iterations, talus_angle, erosion_mode);
                         }
                         if calculate_rivers {
-                            match simulate_river_flow(&mut buffer, &mut colored_buffer, river_iterations, erosion_factor, river_amount){
+                            match simulate_river_flow(&mut buffer, &mut colored_buffer, river_iterations, erosion_factor, river_amount,river_seed){
                                 Ok(_) => {},
                                 Err(e) => {
                                     println!("Error: {}", e);
@@ -664,10 +673,13 @@ fn simulate_river_flow(
     rain_iterations: usize,
     erosion_factor: i16,
     num_rivers: usize,
+    fixed_seed: u64
 ) -> Result<(), String> {
     let (width, height) = heightmap.dimensions();
-    let mut rng = rand::thread_rng();
     
+    // Use a seeded RNG for consistent river origins
+    let mut rng = StdRng::seed_from_u64(fixed_seed);
+
     let mut heightmap_i16: Vec<Vec<i16>> = vec![vec![0; height as usize]; width as usize];
     for x in 0..width {
         for y in 0..height {
@@ -709,8 +721,6 @@ fn simulate_river_flow(
 
                 if min_height < center_height {
                     let new_height = min_height.saturating_sub(erosion_factor);
-                    //heightmap_i16[min_x as usize][min_y as usize] = new_height;
-
                     let new_height_u8 = std::cmp::max(0, std::cmp::min(new_height, 255)) as u8;
                     heightmap.put_pixel(min_x, min_y, Rgba([new_height_u8, new_height_u8, new_height_u8, 255]));
                     colormap.put_pixel(min_x, min_y, COLORS[0]);
@@ -720,7 +730,7 @@ fn simulate_river_flow(
             }
         }
     }
-    
+
     Ok(())
 }
 
