@@ -9,13 +9,13 @@ use super::constants::COLORS;
 pub fn generate_perlin_noise_buffer(width: u32, height: u32, offset_x: f64, offset_y: f64, scale: f64, opacity: f64, seed: u32) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
     let perlin = Perlin::new(seed);
 
-    return ImageBuffer::from_fn(width, height, |x, y| {
+    ImageBuffer::from_fn(width, height, |x, y| {
         let x = (x as f64 + offset_x) * scale;
         let y = (y as f64 + offset_y) * scale;
         let noise_val = perlin.get([x, y]) * 0.5 + 0.5;
         let color = (noise_val * 255.0) as u8;
         Rgba([color, color, color,(opacity * 255.0) as u8])
-    });    
+    })
 }
 
 pub fn blend_buffers(buffer_a: &ImageBuffer<Rgba<u8>, Vec<u8>>, buffer_b: &ImageBuffer<Rgba<u8>, Vec<u8>>, blend_mode: i32) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
@@ -134,10 +134,10 @@ pub fn thermal_erosion(
                         let neighbor_pixel = temp_heightmap.get_pixel((x as i32 + dx) as u32, (y as i32 + dy) as u32);
                         let neighbor_color = temp_colormap.get_pixel((x as i32 + dx) as u32, (y as i32 + dy) as u32);
 
-                        if should_erode(center_pixel.clone(), neighbor_pixel.clone(), talus_angle, erosion_mode) {
+                        if should_erode(*center_pixel, *neighbor_pixel, talus_angle, erosion_mode) {
                             // Update both heightmap and colormap
-                            heightmap.put_pixel(x, y, neighbor_pixel.clone());
-                            colormap.put_pixel(x, y, neighbor_color.clone());
+                            heightmap.put_pixel(x, y, *neighbor_pixel);
+                            colormap.put_pixel(x, y, *neighbor_color);
                             changed = true;
                             break;
                         }

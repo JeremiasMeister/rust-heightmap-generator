@@ -1,2 +1,2 @@
-pub mod heightmap_gen;
+pub mod heightmap;
 pub mod constants;

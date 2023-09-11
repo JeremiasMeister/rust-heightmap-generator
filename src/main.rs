@@ -14,7 +14,7 @@ use slint::{slint, Model, VecModel,SharedPixelBuffer,Rgba8Pixel};
 use serde_derive::{Serialize, Deserialize};
 
 
-use heightmap_gen::heightmap_gen::{generate_perlin_noise_buffer, blend_buffers, colorize_buffer, clamp_image_buffer, thermal_erosion, simulate_river_flow, scale_image, save_image_to_desktop};
+use heightmap_gen::heightmap::{generate_perlin_noise_buffer, blend_buffers, colorize_buffer, clamp_image_buffer, thermal_erosion, simulate_river_flow, scale_image, save_image_to_desktop};
 use heightmap_gen::constants::IMAGE_SIZE;
 
 
@@ -370,12 +370,12 @@ fn main() {
             let seed = clicked_handle.get_seed() as u32;
             let model_rc = clicked_handle.get_layers();
             let layer_parms = model_rc.as_any().downcast_ref::<VecModel<LayerParams>>().unwrap();
-            let erosion_mode = clicked_handle.get_erosion_mode() as i32;
+            let erosion_mode = clicked_handle.get_erosion_mode();
             let erosion_iterations = clicked_handle.get_erosion_iterations() as usize;
-            let talus_angle = clicked_handle.get_talus_angle() as f32;
-            let flatten_enabled = clicked_handle.get_flatten_enabled() as bool;
+            let talus_angle = clicked_handle.get_talus_angle();
+            let flatten_enabled = clicked_handle.get_flatten_enabled();
             let ground_level = clicked_handle.get_ground_level() as u8;
-            let calculate_rivers = clicked_handle.get_calculate_rivers() as bool;
+            let calculate_rivers = clicked_handle.get_calculate_rivers();
             let river_iterations = clicked_handle.get_river_iterations() as usize;
             let erosion_factor = clicked_handle.get_erosion_factor() as i16;
             let river_amount = clicked_handle.get_river_amount() as usize;
@@ -389,7 +389,7 @@ fn main() {
                     offset_y: layer.offset_y as f64,
                     seed: layer.seed as u32,
                     opacity: layer.opacity as f64,
-                    blend_mode: layer.blend_mode as i32,
+                    blend_mode: layer.blend_mode,
                 });
             }
 
@@ -401,7 +401,7 @@ fn main() {
                     (Ok(mut locked_buffer), Ok(mut locked_color_buffer)) => {
                         let mut buffer = generate_perlin_noise_buffer(IMAGE_SIZE,IMAGE_SIZE,offset_x,offset_y,scale,1.0,seed);
                         for layer in layers {
-                            let layer_buffer = generate_perlin_noise_buffer(IMAGE_SIZE,IMAGE_SIZE,layer.offset_x as f64,layer.offset_y as f64,layer.scale as f64,layer.opacity as f64,layer.seed as u32);
+                            let layer_buffer = generate_perlin_noise_buffer(IMAGE_SIZE,IMAGE_SIZE,layer.offset_x,layer.offset_y,layer.scale,layer.opacity,layer.seed);
                             buffer = blend_buffers(&buffer,&layer_buffer,layer.blend_mode);
                         }
                         if flatten_enabled {
@@ -421,8 +421,8 @@ fn main() {
                         }
                         *locked_buffer = buffer.clone();
                         *locked_color_buffer = colored_buffer.clone();
-                        let pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&buffer.into_raw().as_slice(), IMAGE_SIZE, IMAGE_SIZE); 
-                        let colored_pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&colored_buffer.into_raw().as_slice(), IMAGE_SIZE, IMAGE_SIZE);
+                        let pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(buffer.into_raw().as_slice(), IMAGE_SIZE, IMAGE_SIZE); 
+                        let colored_pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(colored_buffer.into_raw().as_slice(), IMAGE_SIZE, IMAGE_SIZE);
                         let weak_copy = handle.clone();
                         match slint::invoke_from_event_loop(move || {
                             let img = slint::Image::from_rgba8(pixel_buffer);
@@ -599,7 +599,7 @@ fn deserialize_tool(weak: &slint::Weak<App>){
                     offset_y: layer.offset_y as f32,
                     seed: layer.seed as f32,
                     opacity: layer.opacity as f32,
-                    blend_mode: layer.blend_mode as i32,
+                    blend_mode: layer.blend_mode,
                 });
             }
             handle.set_erosion_mode(serialized_tool.erosion_mode as i32);
@@ -630,12 +630,12 @@ fn serialize_tool(weak: &slint::Weak<App>){
     let seed = handle.get_seed() as u32;
     let model_rc = handle.get_layers();
     let layer_parms = model_rc.as_any().downcast_ref::<VecModel<LayerParams>>().unwrap();
-    let erosion_mode = handle.get_erosion_mode() as i32;
+    let erosion_mode = handle.get_erosion_mode();
     let erosion_iterations = handle.get_erosion_iterations() as usize;
-    let talus_angle = handle.get_talus_angle() as f32;
-    let flatten_enabled = handle.get_flatten_enabled() as bool;
+    let talus_angle = handle.get_talus_angle();
+    let flatten_enabled = handle.get_flatten_enabled();
     let ground_level = handle.get_ground_level() as u8;
-    let calculate_rivers = handle.get_calculate_rivers() as bool;
+    let calculate_rivers = handle.get_calculate_rivers();
     let river_iterations = handle.get_river_iterations() as usize;
     let erosion_factor = handle.get_erosion_factor() as i16;
     let river_amount = handle.get_river_amount() as usize;
@@ -651,28 +651,28 @@ fn serialize_tool(weak: &slint::Weak<App>){
             offset_y: layer.offset_y as f64,
             seed: layer.seed as u32,
             opacity: layer.opacity as f64,
-            blend_mode: layer.blend_mode as i32,
+            blend_mode: layer.blend_mode,
         });
     }
     let serialized_tool = SerializedTool {
-        scale: scale,
-        offset_x: offset_x,
-        offset_y: offset_y,
-        seed: seed,
+        scale,
+        offset_x,
+        offset_y,
+        seed,
         layers: serde_json::to_string(&layers).unwrap(),
-        erosion_mode: erosion_mode,
-        erosion_iterations: erosion_iterations,
-        talus_angle: talus_angle,
-        flatten_enabled: flatten_enabled,
-        ground_level: ground_level,
-        calculate_rivers: calculate_rivers,
-        river_iterations: river_iterations,
-        erosion_factor: erosion_factor,
-        river_amount: river_amount,
-        river_seed: river_seed,
+        erosion_mode,
+        erosion_iterations,
+        talus_angle,
+        flatten_enabled,
+        ground_level,
+        calculate_rivers,
+        river_iterations,
+        erosion_factor,
+        river_amount,
+        river_seed,
         filename: file_name.to_string(),
-        export_scale: export_scale,
-        export_filter: export_filter,
+        export_scale,
+        export_filter,
     };
 
     let serialized_tool_json = serde_json::to_string_pretty(&serialized_tool).unwrap();
