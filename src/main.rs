@@ -1,29 +1,23 @@
+mod heightmap_gen;
+
 extern crate image;
 extern crate dirs;
-use image::imageops::FilterType::Lanczos3;
-use image::{ImageBuffer, Rgba, Pixel, imageops::FilterType};
-use noise::{NoiseFn, Perlin};
+extern crate serde;
+extern crate serde_json;
+
+use image::{ImageBuffer, Rgba, imageops::FilterType};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::error::Error;
+use std::fs;
+use std::io::Read;
 use slint::{slint, Model, VecModel,SharedPixelBuffer,Rgba8Pixel};
-use rand::{Rng, SeedableRng};
-use rand::rngs::StdRng;
+use serde_derive::{Serialize, Deserialize};
 
-const IMAGE_SIZE: u32 = 256;
-const EXPORT_IMAGE_SIZE: (u32,u32) = (4096,4096);
-const COLORS: [Rgba<u8>; 10] = [
-    Rgba([0, 0, 200, 255]),   // Blue for water
-    Rgba([0, 200, 255, 255]),   // Blue for water
-    Rgba([0, 128, 0, 255]),   // Green for grasslands
-    Rgba([60, 160, 0, 255]),   // Green for grasslands
-    Rgba([100, 140, 0, 255]),   // Green for grasslands
-    Rgba([139, 69, 19, 255]), // Brown for hills
-    Rgba([139, 100, 60, 255]), // Brown for hills
-    Rgba([105, 105, 105, 255]), // Dark Gray for lower mountains
-    Rgba([192, 192, 192, 255]), // Light Gray for higher mountains
-    Rgba([255, 255, 255, 255])  // White for mountain tips
-];
+
+use heightmap_gen::heightmap_gen::{generate_perlin_noise_buffer, blend_buffers, colorize_buffer, clamp_image_buffer, thermal_erosion, simulate_river_flow, scale_image, save_image_to_desktop};
+use heightmap_gen::constants::IMAGE_SIZE;
+
+
 
 slint! {
     import { Button , VerticalBox, Slider, HorizontalBox, CheckBox, TextEdit, ComboBox} from "std-widgets.slint";
@@ -35,39 +29,44 @@ slint! {
         seed: float,
         opacity: float,
         blend_mode: int,
-    }
+    }    
     
     export component App inherits Window {
-        title: "Perlin Noise Generator";
+        title: "Heightmap Generator";
         icon: @image-url("images/icon.png");
-        min-width: 800px;
+        min-width: 850px;
+        background: #161616;
         
         callback ui_changed;
+        callback load_btn_clicked <=> load_btn.clicked;
         callback export_btn_clicked <=> btn.clicked;
         callback add_layer_btn_clicked <=> add_layer_btn.clicked;
         callback remove_layer_btn_clicked <=> remove_layer_btn.clicked;
         
-        out property <float> scale <=> scl.value;
-        out property <float> offset_x <=> ofx.value;
-        out property <float> offset_y <=> ofy.value;
-        out property <float> seed <=> sd.value;
+        in-out property <float> scale <=> scl.value;
+        in-out property <float> offset_x <=> ofx.value;
+        in-out property <float> offset_y <=> ofy.value;
+        in-out property <float> seed <=> sd.value;
         in-out property <image> image <=> img.source;
         in-out property <image> colormap <=> colormap.source;
-        out property <[LayerParams]> layers: [];
-        out property <string> filename <=> filename.text;
+        in-out property <[LayerParams]> layers: [];
 
-        out property <int> erosion_mode <=> erosion_mode.current-index;
-        out property <float> erosion_iterations <=> erosion_iterations.value;
-        out property <float> talus_angle <=> talus_angle.value;
+        in-out property <string> filename <=> filename.text;
+        in-out property <int> export_scale <=> export_scale.current-index;
+        in-out property <int> scale_type <=> export_filter.current-index;
 
-        out property <bool> flatten_enabled <=> flatten_enabled.checked;
-        out property <float> ground_level <=> ground_level.value;
+        in-out property <int> erosion_mode <=> erosion_mode.current-index;
+        in-out property <float> erosion_iterations <=> erosion_iterations.value;
+        in-out property <float> talus_angle <=> talus_angle.value;
 
-        out property <bool> calculate_rivers <=> river_enabled.checked;
-        out property <float> river_iterations <=> river_iterations.value;
-        out property <float> erosion_factor <=> erosion_factor.value;
-        out property <float> river_amount <=> river_amount.value;
-        out property <float> river_seed <=> river_seed.value;
+        in-out property <bool> flatten_enabled <=> flatten_enabled.checked;
+        in-out property <float> ground_level <=> ground_level.value;
+
+        in-out property <bool> calculate_rivers <=> river_enabled.checked;
+        in-out property <float> river_iterations <=> river_iterations.value;
+        in-out property <float> erosion_factor <=> erosion_factor.value;
+        in-out property <float> river_amount <=> river_amount.value;
+        in-out property <float> river_seed <=> river_seed.value;
 
         Rectangle {
             background: #292929;
@@ -287,20 +286,43 @@ slint! {
                         Rectangle {
                             background: #161616;
                             border-radius: 5px;
+                            width: 160px;
                             filename:=TextInput {
                                 single-line: true;
                                 text: "noise";
-                                width: 100px;
                                 height: 30px;
+                                width: 150px;
                                 vertical-alignment: center;
+                                horizontal-alignment: left;
                             }
                         }
                         
                     }
+                    HorizontalBox {
+                        VerticalBox {
+                            Text {text: "Scale"; vertical-alignment: center;}
+                            export_scale:=ComboBox{
+                                model: ["256","515","1024","2048","4096"];
+                                current-index: 0;
+                                height: 25px;
+                            }
+                        }
+                        VerticalBox {
+                            Text {text: "Filter"; vertical-alignment: center;}
+                            export_filter:=ComboBox{
+                                model: ["Nearest","Triangle","CatmullRom","Gaussian","Lanczos3"];
+                                current-index: 4;
+                                height: 25px;
+                            }
+                        }
+                    }
+                    HorizontalBox {
+                        load_btn:=Button {height: 30px; text: "Try Load Texture";}
+                        btn:=Button {height: 30px; text: "Export Texture";}
+                    }
                     
-                    btn:=Button {height: 30px; text: "Export Texture";}
                     Text {
-                        text: "Exported textures will be saved on your Desktop";
+                        text: "Exported textures will be saved or loaded to/from your Desktop";
                         color: #8a8a8a;
                         font-size: 10px;
                         font-italic: true;
@@ -313,6 +335,7 @@ slint! {
         
 }
 
+#[derive(Serialize, Deserialize)]
 struct Layers {
     scale: f64,
     offset_x: f64,
@@ -327,7 +350,8 @@ fn main() {
     let app_weak: slint::Weak<App> = app.as_weak();
     let app_add_weak = app_weak.clone();
     let app_remove_weak = app_weak.clone();
-    let app_export_weak = app_weak.clone();    
+    let app_export_weak = app_weak.clone();
+    let app_load_weak = app_weak.clone();
     let main_buffer: Arc<Mutex<ImageBuffer<Rgba<u8>, Vec<u8>>>> = Arc::new(Mutex::new(ImageBuffer::new(IMAGE_SIZE, IMAGE_SIZE)));
     let main_color_buffer: Arc<Mutex<ImageBuffer<Rgba<u8>, Vec<u8>>>> = Arc::new(Mutex::new(ImageBuffer::new(IMAGE_SIZE, IMAGE_SIZE)));
     let export_main_buffer = Arc::clone(&main_buffer);
@@ -447,99 +471,222 @@ fn main() {
         }
     });
 
+    app.on_load_btn_clicked(move ||{
+        deserialize_tool(&app_load_weak);
+    });
+
     app.on_export_btn_clicked(move || {
         let clicked_handle = app_export_weak.upgrade().unwrap();
         let locked_buffer = export_main_buffer.lock().unwrap();
-        let locked_color_buffer = export_main_color_buffer.lock().unwrap();
-        let filename = clicked_handle.get_filename();
+        let locked_color_buffer = export_main_color_buffer.lock().unwrap();        
         let mut buffer = locked_buffer.clone();
         let mut color_buffer = locked_color_buffer.clone();
-        match scale_image(&mut buffer, EXPORT_IMAGE_SIZE, Lanczos3){
+
+        let filename = clicked_handle.get_filename();
+        let export_scale = clicked_handle.get_export_scale() as u32;
+        let export_filter = clicked_handle.get_scale_type() as u32;
+
+        let image_size = match export_scale {
+            0 => {IMAGE_SIZE},
+            1 => {IMAGE_SIZE * 2},
+            2 => {IMAGE_SIZE * 4},
+            3 => {IMAGE_SIZE * 8},
+            4 => {IMAGE_SIZE * 16},
+            _ => {IMAGE_SIZE}
+        };
+
+        let image_filter = match export_filter {
+            0 => {FilterType::Nearest},
+            1 => {FilterType::Triangle},
+            2 => {FilterType::CatmullRom},
+            3 => {FilterType::Gaussian},
+            4 => {FilterType::Lanczos3},
+            _ => {FilterType::Lanczos3}
+        };
+
+        match scale_image(&mut buffer, (image_size,image_size), image_filter){
             Ok(_) => {},
             Err(e) => {
                 println!("Error: {}", e);
             }
         }
-        match scale_image(&mut color_buffer, EXPORT_IMAGE_SIZE, Lanczos3){
+        match scale_image(&mut color_buffer, (image_size,image_size), image_filter){
             Ok(_) => {},
             Err(e) => {
                 println!("Error: {}", e);
             }
         }
+        serialize_tool(&app_export_weak);
         save_image_to_desktop(&buffer, filename.as_str(),"height");
         save_image_to_desktop(&color_buffer, filename.as_str(), "color");
     });
     app.run().unwrap();
 }
 
-fn generate_perlin_noise_buffer(width: u32, height: u32, offset_x: f64, offset_y: f64, scale: f64, opacity: f64, seed: u32) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
-    let perlin = Perlin::new(seed);
 
-    return ImageBuffer::from_fn(width, height, |x, y| {
-        let x = (x as f64 + offset_x) * scale;
-        let y = (y as f64 + offset_y) * scale;
-        let noise_val = perlin.get([x, y]) * 0.5 + 0.5;
-        let color = (noise_val * 255.0) as u8;
-        Rgba([color, color, color,(opacity * 255.0) as u8])
-    });    
+
+#[derive(Serialize, Deserialize)]
+struct SerializedTool{
+    scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+    seed: u32,
+    layers: String,
+    erosion_mode: i32,
+    erosion_iterations: usize,
+    talus_angle: f32,
+    flatten_enabled: bool,
+    ground_level: u8,
+    calculate_rivers: bool,
+    river_iterations: usize,
+    erosion_factor: i16,
+    river_amount: usize,
+    river_seed: u64,
+    filename: String,
+    export_scale: u32,
+    export_filter: u32,
 }
 
-fn blend_buffers(buffer_a: &ImageBuffer<Rgba<u8>, Vec<u8>>, buffer_b: &ImageBuffer<Rgba<u8>, Vec<u8>>, blend_mode: i32) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
-    let (width, height) = buffer_a.dimensions();
-    
-    ImageBuffer::from_fn(width, height, |x, y| {
-        let pixel_a = buffer_a.get_pixel(x, y);
-        let pixel_b = buffer_b.get_pixel(x, y);
-        
-        let alpha_a = pixel_a[3] as f32 / 255.0;
-        let alpha_b = pixel_b[3] as f32 / 255.0;
-        
-        let new_alpha = alpha_a * (1.0 - alpha_b) + alpha_b;
-        
-        let mut blended_pixel = [0u8; 4];
-        
-        for i in 0..3 {
-            let channel_a = pixel_a[i] as f32 / 255.0;
-            let channel_b = pixel_b[i] as f32 / 255.0;
-            
-            match blend_mode {
-                // Blend
-                0 => {
-                    blended_pixel[i] = ((channel_a * (1.0 - alpha_b) + channel_b * alpha_b) * 255.0).min(255.0) as u8;
-                },
-                // Multiply                
-                1 => {
-                    let blended_channel = channel_a * (1.0 - alpha_b) + channel_a * channel_b * alpha_b; // Interpolate based on alpha_b
-                    blended_pixel[i] = (blended_channel * 255.0).min(255.0) as u8;
-                },
-                //
-                2 => {
-                    blended_pixel[i] = ((channel_a * alpha_a + channel_b * alpha_b) * 255.0).min(255.0) as u8;
-                },
-                _ => {
-                    panic!("Invalid blend mode");
+fn deserialize_tool(weak: &slint::Weak<App>){
+    let handle = weak.upgrade().unwrap();
+    let file_name = handle.get_filename();
+    let desktop_path = dirs::desktop_dir();
+    match desktop_path {
+        Some(path) =>{
+            let file_path = path.join(format!("{}_config.json",file_name));
+            let mut file = match fs::File::open(file_path) {
+                Ok(file) => file,
+                Err(e) => {
+                    println!("Couldn't open file: {}", e);
+                    return;
+                }
+            };
+            let mut contents = String::new();
+            match file.read_to_string(&mut contents) {
+                Ok(_) => {},
+                Err(e) => {
+                    println!("Couldn't read file: {}", e);
+                    return;
                 }
             }
-        }
-        
-        blended_pixel[3] = (new_alpha * 255.0).min(255.0) as u8;
-        
-        Rgba(blended_pixel)
-    })
+            let serialized_tool: SerializedTool = match serde_json::from_str(&contents) {
+                Ok(tool) => tool,
+                Err(e) => {
+                    println!("Couldn't deserialize tool: {}", e);
+                    return;
+                }
+            };
+            handle.set_scale(serialized_tool.scale as f32);
+            handle.set_offset_x(serialized_tool.offset_x as f32);
+            handle.set_offset_y(serialized_tool.offset_y as f32);
+            handle.set_seed(serialized_tool.seed as f32);
+            let layers: Vec<Layers> = match serde_json::from_str(&serialized_tool.layers) {
+                Ok(layers) => layers,
+                Err(e) => {
+                    println!("Couldn't deserialize layers: {}", e);
+                    return;
+                }
+            };
+            let model_rc = handle.get_layers();
+            let layer_parms = model_rc.as_any().downcast_ref::<VecModel<LayerParams>>().unwrap();
+            while layer_parms.iter().count() > 0 {
+                layer_parms.remove(0);
+            }
+            for layer in layers {
+                layer_parms.push(LayerParams {
+                    scale: layer.scale as f32,
+                    offset_x: layer.offset_x as f32,
+                    offset_y: layer.offset_y as f32,
+                    seed: layer.seed as f32,
+                    opacity: layer.opacity as f32,
+                    blend_mode: layer.blend_mode as i32,
+                });
+            }
+            handle.set_erosion_mode(serialized_tool.erosion_mode as i32);
+            handle.set_erosion_iterations(serialized_tool.erosion_iterations as f32);
+            handle.set_talus_angle(serialized_tool.talus_angle as f32);
+            handle.set_flatten_enabled(serialized_tool.flatten_enabled as bool);
+            handle.set_ground_level(serialized_tool.ground_level as f32);
+            handle.set_calculate_rivers(serialized_tool.calculate_rivers as bool);
+            handle.set_river_iterations(serialized_tool.river_iterations as f32);
+            handle.set_erosion_factor(serialized_tool.erosion_factor as f32);
+            handle.set_river_amount(serialized_tool.river_amount as f32);
+            handle.set_river_seed(serialized_tool.river_seed as f32);
+            handle.set_filename(slint::SharedString::from(serialized_tool.filename));
+            handle.set_export_scale(serialized_tool.export_scale as i32);
+            handle.set_scale_type(serialized_tool.export_filter as i32);            
+        },
+        None => {
+            println!("Couldn't find desktop path");
+        }     
+    }
 }
 
-fn save_image_to_desktop(buffer: &ImageBuffer<Rgba<u8>, Vec<u8>>, filename: &str, suffix: &str){
+fn serialize_tool(weak: &slint::Weak<App>){
+    let handle = weak.upgrade().unwrap();
+    let scale = handle.get_scale() as f64;
+    let offset_x = handle.get_offset_x() as f64;
+    let offset_y = handle.get_offset_y() as f64;
+    let seed = handle.get_seed() as u32;
+    let model_rc = handle.get_layers();
+    let layer_parms = model_rc.as_any().downcast_ref::<VecModel<LayerParams>>().unwrap();
+    let erosion_mode = handle.get_erosion_mode() as i32;
+    let erosion_iterations = handle.get_erosion_iterations() as usize;
+    let talus_angle = handle.get_talus_angle() as f32;
+    let flatten_enabled = handle.get_flatten_enabled() as bool;
+    let ground_level = handle.get_ground_level() as u8;
+    let calculate_rivers = handle.get_calculate_rivers() as bool;
+    let river_iterations = handle.get_river_iterations() as usize;
+    let erosion_factor = handle.get_erosion_factor() as i16;
+    let river_amount = handle.get_river_amount() as usize;
+    let river_seed = handle.get_river_seed() as u64;
+    let file_name = handle.get_filename();
+    let export_scale = handle.get_export_scale() as u32;
+    let export_filter = handle.get_scale_type() as u32;
+    let mut layers: Vec<Layers> = Vec::new();
+    for layer in layer_parms.iter() {
+        layers.push(Layers {
+            scale: layer.scale as f64,
+            offset_x: layer.offset_x as f64,
+            offset_y: layer.offset_y as f64,
+            seed: layer.seed as u32,
+            opacity: layer.opacity as f64,
+            blend_mode: layer.blend_mode as i32,
+        });
+    }
+    let serialized_tool = SerializedTool {
+        scale: scale,
+        offset_x: offset_x,
+        offset_y: offset_y,
+        seed: seed,
+        layers: serde_json::to_string(&layers).unwrap(),
+        erosion_mode: erosion_mode,
+        erosion_iterations: erosion_iterations,
+        talus_angle: talus_angle,
+        flatten_enabled: flatten_enabled,
+        ground_level: ground_level,
+        calculate_rivers: calculate_rivers,
+        river_iterations: river_iterations,
+        erosion_factor: erosion_factor,
+        river_amount: river_amount,
+        river_seed: river_seed,
+        filename: file_name.to_string(),
+        export_scale: export_scale,
+        export_filter: export_filter,
+    };
+
+    let serialized_tool_json = serde_json::to_string_pretty(&serialized_tool).unwrap();
     let desktop_path = dirs::desktop_dir();
     match desktop_path {
         Some(path) => {            
-            let full_path = path.join(format!("{}_{}.png", filename, suffix));
+            let full_path = path.join(format!("{}_config.json",file_name));
             println!("Desktop path: {}", full_path.display());
-            match buffer.save(full_path) {
+            match fs::write(full_path, serialized_tool_json) {
                 Ok(_) => {
-                    println!("Image saved");
+                    println!("Tool saved");
                 },
                 Err(e) => {
-                    println!("Couldn't save image: {}", e);
+                    println!("Couldn't save tool: {}", e);
                 }
             }
                 
@@ -547,203 +694,5 @@ fn save_image_to_desktop(buffer: &ImageBuffer<Rgba<u8>, Vec<u8>>, filename: &str
         None => {
             println!("Couldn't find desktop path");
         }
-    }
-    
-}
-
-// Function to decide if erosion should happen based on the pixels and the erosion mode
-fn should_erode(center: Rgba<u8>, neighbor: Rgba<u8>, talus_angle: f32, erosion_mode: i32) -> bool {
-    for channel in 0..3 {
-        match erosion_mode {
-            0 => { return false; },
-            1 => {
-                if neighbor[channel] < center[channel] {
-                    return true;
-                }
-            },
-            2 => {
-                let delta = (center[channel] as f32 - neighbor[channel] as f32) / 255.0;
-                if delta > talus_angle {
-                    return true;
-                }
-            },
-            _ => { panic!("Invalid erosion mode"); }
-        }
-    }
-    false
-}
-
-fn thermal_erosion(
-    heightmap: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
-    colormap: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
-    iterations: usize,
-    talus_angle: f32,
-    erosion_mode: i32,
-) {
-    let (width, height) = heightmap.dimensions();
-
-    for _ in 0..iterations {
-        let temp_heightmap = heightmap.clone(); // Temporary heightmap to store updates
-        let temp_colormap = colormap.clone(); // Temporary colormap to store updates
-
-        for y in 1..(height - 1) {
-            for x in 1..(width - 1) {
-                let center_pixel = temp_heightmap.get_pixel(x, y);
-                let mut changed = false;
-
-                for dx in -1..=1 {
-                    for dy in -1..=1 {
-                        if dx == 0 && dy == 0 {
-                            continue;
-                        }
-
-                        let neighbor_pixel = temp_heightmap.get_pixel((x as i32 + dx) as u32, (y as i32 + dy) as u32);
-                        let neighbor_color = temp_colormap.get_pixel((x as i32 + dx) as u32, (y as i32 + dy) as u32);
-
-                        if should_erode(center_pixel.clone(), neighbor_pixel.clone(), talus_angle, erosion_mode) {
-                            // Update both heightmap and colormap
-                            heightmap.put_pixel(x, y, neighbor_pixel.clone());
-                            colormap.put_pixel(x, y, neighbor_color.clone());
-                            changed = true;
-                            break;
-                        }
-                    }
-                    if changed {
-                        break;
-                    }
-                }
-            }
-        }
-    }
-}
-
-
-
-fn clamp_image_buffer(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, min: u8, max: u8) {
-    let (width, height) = img.dimensions();
-
-    for y in 0..height {
-        for x in 0..width {
-            let pixel = img.get_pixel_mut(x, y);
-            for channel in 0..3 {
-                pixel[channel] = pixel[channel].min(max).max(min);
-            }
-        }
-    }
-}
-
-fn lerp(a: u8, b: u8, t: f32) -> u8 {
-    ((1.0 - t) * a as f32 + t * b as f32) as u8
-}
-
-fn colorize_buffer(img: &ImageBuffer<Rgba<u8>, Vec<u8>>) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
-    let (width, height) = img.dimensions();
-    let mut colorized_img = img.clone();
-    
-    for y in 0..height {
-        for x in 0..width {
-            let pixel = img.get_pixel(x, y);
-            let luminance = pixel.to_luma()[0] as f32 / 255.0;
-            
-            // Calculate indices and interpolation factor
-            let t = luminance * (COLORS.len() as f32 - 1.0);
-            let index1 = t.floor() as usize;
-            let index2 = (index1 + 1).min(COLORS.len() - 1);
-            let factor = t - index1 as f32;
-            
-            let color1 = COLORS[index1];
-            let color2 = COLORS[index2];
-            
-            // Interpolate between the two colors
-            let mut new_color = [0u8; 4];
-            for i in 0..4 {
-                new_color[i] = lerp(color1[i], color2[i], factor);
-            }
-            
-            colorized_img.put_pixel(x, y, Rgba(new_color));
-        }
-    }
-    
-    colorized_img
-}
-
-fn simulate_river_flow(
-    heightmap: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
-    colormap: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
-    rain_iterations: usize,
-    erosion_factor: i16,
-    num_rivers: usize,
-    fixed_seed: u64
-) -> Result<(), String> {
-    let (width, height) = heightmap.dimensions();
-    
-    // Use a seeded RNG for consistent river origins
-    let mut rng = StdRng::seed_from_u64(fixed_seed);
-
-    let mut heightmap_i16: Vec<Vec<i16>> = vec![vec![0; height as usize]; width as usize];
-    for x in 0..width {
-        for y in 0..height {
-            heightmap_i16[x as usize][y as usize] = heightmap.get_pixel(x, y)[1] as i16;
-        }
-    }
-
-    for _ in 0..num_rivers {
-        let mut x = rng.gen_range(1..width - 1);
-        let mut y = rng.gen_range(1..height - 1);
-
-        for _ in 0..rain_iterations {
-            if x > 0 && x < width - 1 && y > 0 && y < height - 1 {
-                let center_height = heightmap_i16[x as usize][y as usize];
-                let mut min_height = center_height;
-                let mut min_x = x;
-                let mut min_y = y;
-
-                for dx in -1..=1 {
-                    for dy in -1..=1 {
-                        if dx == 0 && dy == 0 {
-                            continue;
-                        }
-                        let neighbor_x = (x as i32 + dx) as usize;
-                        let neighbor_y = (y as i32 + dy) as usize;
-
-                        if neighbor_x >= width as usize || neighbor_y >= height as usize {
-                            continue;
-                        }
-
-                        let neighbor_height = heightmap_i16[neighbor_x][neighbor_y];
-                        if neighbor_height < min_height {
-                            min_height = neighbor_height;
-                            min_x = neighbor_x as u32;
-                            min_y = neighbor_y as u32;
-                        }
-                    }
-                }
-
-                if min_height < center_height {
-                    let new_height = min_height.saturating_sub(erosion_factor);
-                    let new_height_u8 = std::cmp::max(0, std::cmp::min(new_height, 255)) as u8;
-                    heightmap.put_pixel(min_x, min_y, Rgba([new_height_u8, new_height_u8, new_height_u8, 255]));
-                    colormap.put_pixel(min_x, min_y, COLORS[0]);
-                    x = min_x;
-                    y = min_y;
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-
-fn scale_image(buffer: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, target_size: (u32, u32), scale_method: FilterType) -> Result<(), Box<dyn Error>> {
-    let (target_width, target_height) = target_size;
-
-    if target_width == 0 || target_height == 0 {
-        return Err("Target size should be greater than zero".into());
-    }
-
-    let scaled_image = image::imageops::resize(buffer, target_width, target_height, scale_method);
-    *buffer = scaled_image;
-
-    Ok(())
+    }    
 }
