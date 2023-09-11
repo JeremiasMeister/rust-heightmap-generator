@@ -5,7 +5,7 @@ My first little project which involved GUI and a desktop application within Rust
 I chose a Heightmap generator out of the motivation that it produces a graphical output. 
 
 **UI:**<br>
-![Screenshot 2023-09-09 155120](https://github.com/JeremiasMeister/rust-heightmap-generator/assets/85162425/c145782a-4442-4e89-aa98-181296a898b9)
+![Screenshot 2023-09-11 075105](https://github.com/JeremiasMeister/rust-heightmap-generator/assets/85162425/e3c83459-6341-4383-9a94-0fc8ab51233d)
 
 **Example 01:**<br>
 ![noise_height](https://github.com/JeremiasMeister/rust-heightmap-generator/assets/19373094/4acf4336-e5c8-42ba-8067-96746623414b) ![noise_color](https://github.com/JeremiasMeister/rust-heightmap-generator/assets/19373094/9d8c89df-f8f1-4295-b3ec-3e47808900b6)
