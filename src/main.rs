@@ -404,10 +404,12 @@ fn main() {
                             let layer_buffer = generate_perlin_noise_buffer(IMAGE_SIZE,IMAGE_SIZE,layer.offset_x,layer.offset_y,layer.scale,layer.opacity,layer.seed);
                             buffer = blend_buffers(&buffer,&layer_buffer,layer.blend_mode);
                         }
-                        if flatten_enabled {
-                            clamp_image_buffer(& mut buffer, ground_level, 255);
-                        }
                         let mut colored_buffer = colorize_buffer(&buffer);
+                        
+                        if flatten_enabled {
+                            clamp_image_buffer(& mut buffer,& mut colored_buffer, ground_level, 255);
+                        }
+                        
                         if erosion_mode != 0 {
                             thermal_erosion(&mut buffer, &mut colored_buffer,  erosion_iterations, talus_angle, erosion_mode);
                         }

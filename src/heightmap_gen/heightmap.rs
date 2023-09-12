@@ -153,14 +153,20 @@ pub fn thermal_erosion(
 
 
 
-pub fn clamp_image_buffer(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, min: u8, max: u8) {
-    let (width, height) = img.dimensions();
+pub fn clamp_image_buffer(height_buffer: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,color_buffer: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, min: u8, max: u8) {
+    let (width, height) = height_buffer.dimensions();
+    let min_range = min - 30;
 
     for y in 0..height {
         for x in 0..width {
-            let pixel = img.get_pixel_mut(x, y);
-            for channel in 0..3 {
-                pixel[channel] = pixel[channel].min(max).max(min);
+            let pixel = height_buffer.get_pixel_mut(x, y);
+            let color_pixel = color_buffer.get_pixel_mut(x, y);
+            if pixel[0] <= min {                
+                for channel in 0..3 {
+                    let t = remap(pixel[channel] as f32, min_range as f32, min as f32, 0.0, 1.0);
+                    color_pixel[channel] = lerp(COLORS[0][channel], COLORS[1][channel], t).min(COLORS[1][channel]).max(COLORS[0][channel]);
+                    pixel[channel] = pixel[channel].min(max).max(min);
+                }
             }
         }
     }
@@ -168,6 +174,14 @@ pub fn clamp_image_buffer(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, min: u8, max
 
 fn lerp(a: u8, b: u8, t: f32) -> u8 {
     ((1.0 - t) * a as f32 + t * b as f32) as u8
+}
+
+fn remap(value: f32, old_min: f32, old_max: f32, new_min: f32, new_max: f32) -> f32 {
+    if value < old_min {
+        return new_min;
+    }
+    
+    (value - old_min) / (old_max - old_min) * (new_max - new_min) + new_min
 }
 
 pub fn colorize_buffer(img: &ImageBuffer<Rgba<u8>, Vec<u8>>) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
