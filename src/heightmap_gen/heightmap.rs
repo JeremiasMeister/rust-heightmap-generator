@@ -153,7 +153,7 @@ pub fn thermal_erosion(
 
 
 
-pub fn clamp_image_buffer(height_buffer: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,color_buffer: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, min: u8, max: u8) {
+pub fn clamp_image_buffer(height_buffer: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,color_buffer: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,as_water: bool, min: u8, max: u8) {
     let (width, height) = height_buffer.dimensions();
     let min_range = min - 30;
 
@@ -163,8 +163,10 @@ pub fn clamp_image_buffer(height_buffer: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,col
             let color_pixel = color_buffer.get_pixel_mut(x, y);
             if pixel[0] <= min {                
                 for channel in 0..3 {
-                    let t = remap(pixel[channel] as f32, min_range as f32, min as f32, 0.0, 1.0);
-                    color_pixel[channel] = lerp(COLORS[0][channel], COLORS[1][channel], t).min(COLORS[1][channel]).max(COLORS[0][channel]);
+                    if as_water{
+                        let t = remap(pixel[channel] as f32, min_range as f32, min as f32, 0.0, 1.0);
+                        color_pixel[channel] = lerp(COLORS[0][channel], COLORS[1][channel], t).min(COLORS[1][channel]).max(COLORS[0][channel]);
+                    }                    
                     pixel[channel] = pixel[channel].min(max).max(min);
                 }
             }
@@ -184,7 +186,7 @@ fn remap(value: f32, old_min: f32, old_max: f32, new_min: f32, new_max: f32) -> 
     (value - old_min) / (old_max - old_min) * (new_max - new_min) + new_min
 }
 
-pub fn colorize_buffer(img: &ImageBuffer<Rgba<u8>, Vec<u8>>) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+pub fn colorize_buffer(img: &ImageBuffer<Rgba<u8>, Vec<u8>>, start_index: usize) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
     let (width, height) = img.dimensions();
     let mut colorized_img = img.clone();
     
@@ -195,9 +197,15 @@ pub fn colorize_buffer(img: &ImageBuffer<Rgba<u8>, Vec<u8>>) -> ImageBuffer<Rgba
             
             // Calculate indices and interpolation factor
             let t = luminance * (COLORS.len() as f32 - 1.0);
-            let index1 = t.floor() as usize;
-            let index2 = (index1 + 1).min(COLORS.len() - 1);
+            let mut index1 = t.floor() as usize;
+            let mut index2 = (index1 + 1).min(COLORS.len() - 1);
             let factor = t - index1 as f32;
+            if index1 < start_index {
+                index1 = start_index;
+            }
+            if index2 < start_index {
+                index2 = start_index;
+            }
             
             let color1 = COLORS[index1];
             let color2 = COLORS[index2];

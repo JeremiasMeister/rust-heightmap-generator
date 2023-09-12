@@ -61,6 +61,7 @@ slint! {
 
         in-out property <bool> flatten_enabled <=> flatten_enabled.checked;
         in-out property <float> ground_level <=> ground_level.value;
+        in-out property <bool> as_water <=> as_water.checked;
 
         in-out property <bool> calculate_rivers <=> river_enabled.checked;
         in-out property <float> river_iterations <=> river_iterations.value;
@@ -265,6 +266,12 @@ slint! {
                                 }}
                             }
                             HorizontalBox {
+                                Text {text: "As Water"; vertical-alignment: center; height: 25px;}
+                                as_water:=CheckBox {checked: false; height: 25px; toggled => {
+                                    root.ui_changed();
+                                }}
+                            }                            
+                            HorizontalBox {
                                 Text {text: "Ground Level"; vertical-alignment: center; height: 25px;}
                                 ground_level:=Slider {height: 25px;value: 0.5;minimum: 0.0;maximum: 255.0; changed => {
                                     root.ui_changed();
@@ -374,6 +381,7 @@ fn main() {
             let erosion_iterations = clicked_handle.get_erosion_iterations() as usize;
             let talus_angle = clicked_handle.get_talus_angle();
             let flatten_enabled = clicked_handle.get_flatten_enabled();
+            let as_water = clicked_handle.get_as_water();
             let ground_level = clicked_handle.get_ground_level() as u8;
             let calculate_rivers = clicked_handle.get_calculate_rivers();
             let river_iterations = clicked_handle.get_river_iterations() as usize;
@@ -404,10 +412,10 @@ fn main() {
                             let layer_buffer = generate_perlin_noise_buffer(IMAGE_SIZE,IMAGE_SIZE,layer.offset_x,layer.offset_y,layer.scale,layer.opacity,layer.seed);
                             buffer = blend_buffers(&buffer,&layer_buffer,layer.blend_mode);
                         }
-                        let mut colored_buffer = colorize_buffer(&buffer);
+                        let mut colored_buffer = colorize_buffer(&buffer,2);
                         
                         if flatten_enabled {
-                            clamp_image_buffer(& mut buffer,& mut colored_buffer, ground_level, 255);
+                            clamp_image_buffer(& mut buffer,& mut colored_buffer, as_water, ground_level, 255);
                         }
                         
                         if erosion_mode != 0 {
@@ -547,6 +555,7 @@ struct SerializedTool{
     filename: String,
     export_scale: u32,
     export_filter: u32,
+    as_water: bool,
 }
 
 fn deserialize_tool(weak: &slint::Weak<App>){
@@ -616,7 +625,8 @@ fn deserialize_tool(weak: &slint::Weak<App>){
             handle.set_river_seed(serialized_tool.river_seed as f32);
             handle.set_filename(slint::SharedString::from(serialized_tool.filename));
             handle.set_export_scale(serialized_tool.export_scale as i32);
-            handle.set_scale_type(serialized_tool.export_filter as i32);            
+            handle.set_scale_type(serialized_tool.export_filter as i32);
+            handle.set_as_water(serialized_tool.as_water as bool);       
         },
         None => {
             println!("Couldn't find desktop path");
@@ -645,6 +655,7 @@ fn serialize_tool(weak: &slint::Weak<App>){
     let file_name = handle.get_filename();
     let export_scale = handle.get_export_scale() as u32;
     let export_filter = handle.get_scale_type() as u32;
+    let as_water = handle.get_as_water();
     let mut layers: Vec<Layers> = Vec::new();
     for layer in layer_parms.iter() {
         layers.push(Layers {
@@ -675,6 +686,7 @@ fn serialize_tool(weak: &slint::Weak<App>){
         filename: file_name.to_string(),
         export_scale,
         export_filter,
+        as_water
     };
 
     let serialized_tool_json = serde_json::to_string_pretty(&serialized_tool).unwrap();
