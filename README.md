@@ -16,5 +16,7 @@ I chose a Heightmap generator out of the motivation that it produces a graphical
 **When loading the Heightmap into a 3D program like in this case Houdini:**<br>
 ![Screenshot 2023-09-09 155114](https://github.com/JeremiasMeister/rust-heightmap-generator/assets/85162425/34ad3a1c-740c-4973-bb22-b3bd32866aab)
 
+**When loading the Heightmap into a 3D program like in this case Blender:**<br>
+![image](https://github.com/JeremiasMeister/rust-heightmap-generator/assets/19373094/eeae9402-47a4-45c6-903b-64aaceb830e1)
 
 
