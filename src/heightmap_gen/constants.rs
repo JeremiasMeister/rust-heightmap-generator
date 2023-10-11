@@ -1,6 +1,7 @@
 use image::Rgba;
 
 pub const IMAGE_SIZE: u32 = 256;
+pub const BIG_IMAGE_SIZE: u32 = 512;
 pub const COLORS: [Rgba<u8>; 10] = [
     Rgba([0, 0, 200, 255]),   // Blue for water
     Rgba([0, 200, 255, 255]),   // Blue for water

@@ -1,5 +1,6 @@
 mod heightmap_gen;
 
+extern crate renderer;
 extern crate image;
 extern crate dirs;
 extern crate serde;
@@ -10,12 +11,14 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::fs;
 use std::io::Read;
-use slint::{slint, Model, VecModel,SharedPixelBuffer,Rgba8Pixel};
+use nalgebra::Vector4;
+use slint::{slint, Model, VecModel, SharedPixelBuffer, Rgba8Pixel};
 use serde_derive::{Serialize, Deserialize};
 
-
 use heightmap_gen::heightmap::{generate_perlin_noise_buffer, blend_buffers, colorize_buffer, clamp_image_buffer, thermal_erosion, simulate_river_flow, scale_image, save_image_to_desktop};
-use heightmap_gen::constants::IMAGE_SIZE;
+use heightmap_gen::constants::{IMAGE_SIZE, BIG_IMAGE_SIZE};
+
+use renderer::{renderer as rend, modifiers};
 
 
 
@@ -49,6 +52,7 @@ slint! {
         in-out property <float> seed <=> sd.value;
         in-out property <image> image <=> img.source;
         in-out property <image> colormap <=> colormap.source;
+        in-out property <image> image_perspective <=> persp_image.source;
         in-out property <[LayerParams]> layers: [];
 
         in-out property <string> filename <=> filename.text;
@@ -68,6 +72,11 @@ slint! {
         in-out property <float> erosion_factor <=> erosion_factor.value;
         in-out property <float> river_amount <=> river_amount.value;
         in-out property <float> river_seed <=> river_seed.value;
+
+        out property <int> preview_scale <=> preview_scale.current-index;
+        out property <float> camera_horizontal <=> camera_horizontal.value;
+        out property <float> camera_vertical <=> camera_vertical.value;
+        out property <float> height_3d <=> height_3d.value;
 
         Rectangle {
             background: #292929;
@@ -282,6 +291,37 @@ slint! {
                                         
                 }
                 VerticalBox {
+                    HorizontalBox {
+                        Text {
+                            text: "3D Preview Resolution";
+                            vertical-alignment: center;
+                            height: 25px;
+                        }
+                        preview_scale:=ComboBox{
+                            model: ["32x32","64x64","128x128","Full Size"];
+                            current-index: 2;
+                            height: 25px;
+                        }                        
+                    }
+                    HorizontalBox{
+                        Text {text: "Horizontal"; vertical-alignment: center;}
+                        camera_horizontal:= Slider {value: 1;minimum: 0;maximum: 4; height: 25px; changed => {
+                            root.ui_changed();
+                        }}
+                        Text {text: "Vertical"; vertical-alignment: center;}
+                        camera_vertical:= Slider {value: 25;minimum: 15;maximum: 50; height: 25px; changed => {
+                            root.ui_changed();
+                        }}
+                    }
+                    HorizontalBox{
+                        Text {text: "Height 3D"; vertical-alignment: center;}
+                        height_3d:= Slider {value: 30;minimum: 0;maximum: 100; height: 25px; changed => {
+                            root.ui_changed();
+                        }}
+                    }
+                    persp_image:=Image {source: @image-url("images/reload_icon.png");min-width: 512px;min-height: 512px;}
+                }
+                VerticalBox {
                     img:=Image {source: @image-url("images/reload_icon.png");min-width: 256px;min-height: 256px;}
                     colormap:=Image {source: @image-url("images/reload_icon.png");min-width: 256px;min-height: 256px;}
                     HorizontalBox {
@@ -361,16 +401,23 @@ fn main() {
     let app_load_weak = app_weak.clone();
     let main_buffer: Arc<Mutex<ImageBuffer<Rgba<u8>, Vec<u8>>>> = Arc::new(Mutex::new(ImageBuffer::new(IMAGE_SIZE, IMAGE_SIZE)));
     let main_color_buffer: Arc<Mutex<ImageBuffer<Rgba<u8>, Vec<u8>>>> = Arc::new(Mutex::new(ImageBuffer::new(IMAGE_SIZE, IMAGE_SIZE)));
+    let main_3d_buffer: Arc<Mutex<ImageBuffer<Rgba<u8>, Vec<u8>>>> = Arc::new(Mutex::new(ImageBuffer::new(BIG_IMAGE_SIZE, BIG_IMAGE_SIZE)));
+
     let export_main_buffer = Arc::clone(&main_buffer);
     let export_main_color_buffer = Arc::clone(&main_color_buffer);
+
 
     app.on_ui_changed({
         let main_buffer = Arc::clone(&main_buffer);
         let main_color_buffer = Arc::clone(&main_color_buffer);
+        let main_3d_buffer = Arc::clone(&main_3d_buffer);
         move || {
             let clicked_handle = app_weak.upgrade().unwrap();
+
             let main_buffer = Arc::clone(&main_buffer);
             let main_color_buffer = Arc::clone(&main_color_buffer);
+            let main_3d_buffer = Arc::clone(&main_3d_buffer);
+
             let scale = clicked_handle.get_scale() as f64;
             let offset_x = clicked_handle.get_offset_x() as f64;
             let offset_y = clicked_handle.get_offset_y() as f64;
@@ -389,6 +436,19 @@ fn main() {
             let river_amount = clicked_handle.get_river_amount() as usize;
             let river_seed = clicked_handle.get_river_seed() as u64;
 
+            let preview_plane_res = clicked_handle.get_preview_scale() as usize;
+            let camera_vertical = clicked_handle.get_camera_vertical() as f32;
+            let camera_horizontal = clicked_handle.get_camera_horizontal() as f32;
+            let height_3d = clicked_handle.get_height_3d() as f32;
+
+            let plane_res: usize = match preview_plane_res {
+                0 => 32,
+                1 => 64,
+                2 => 128,
+                3 => 256,
+                _ => 128,
+            };
+
             let mut layers: Vec<Layers> = Vec::new();
             for layer in layer_parms.iter() {
                 layers.push(Layers {
@@ -402,63 +462,111 @@ fn main() {
             }
 
             let handle = clicked_handle.as_weak();
-            thread::spawn(move || {                
+            thread::spawn(move || {
                 let locked_buffer_result = main_buffer.lock();
                 let locked_color_buffer_result = main_color_buffer.lock();
-                match (locked_buffer_result, locked_color_buffer_result) {
-                    (Ok(mut locked_buffer), Ok(mut locked_color_buffer)) => {
-                        let mut buffer = generate_perlin_noise_buffer(IMAGE_SIZE,IMAGE_SIZE,offset_x,offset_y,scale,1.0,seed);
+                let locked_3d_buffer_result = main_3d_buffer.lock();
+                match (locked_buffer_result, locked_color_buffer_result, locked_3d_buffer_result) {
+                    (Ok(mut locked_buffer), Ok(mut locked_color_buffer), Ok(mut locked_3d_buffer)) => {
+                        let mut buffer = generate_perlin_noise_buffer(IMAGE_SIZE, IMAGE_SIZE, offset_x, offset_y, scale, 1.0, seed);
                         for layer in layers {
-                            let layer_buffer = generate_perlin_noise_buffer(IMAGE_SIZE,IMAGE_SIZE,layer.offset_x,layer.offset_y,layer.scale,layer.opacity,layer.seed);
-                            buffer = blend_buffers(&buffer,&layer_buffer,layer.blend_mode);
+                            let layer_buffer = generate_perlin_noise_buffer(IMAGE_SIZE, IMAGE_SIZE, layer.offset_x, layer.offset_y, layer.scale, layer.opacity, layer.seed);
+                            buffer = blend_buffers(&buffer, &layer_buffer, layer.blend_mode);
                         }
-                        let mut colored_buffer = colorize_buffer(&buffer,2);
-                        
+                        let mut colored_buffer = colorize_buffer(&buffer, 2);
+
                         if flatten_enabled {
-                            clamp_image_buffer(& mut buffer,& mut colored_buffer, as_water, ground_level, 255);
+                            clamp_image_buffer(&mut buffer, &mut colored_buffer, as_water, ground_level, 255);
                         }
-                        
+
                         if erosion_mode != 0 {
-                            thermal_erosion(&mut buffer, &mut colored_buffer,  erosion_iterations, talus_angle, erosion_mode);
+                            thermal_erosion(&mut buffer, &mut colored_buffer, erosion_iterations, talus_angle, erosion_mode);
                         }
                         if calculate_rivers {
-                            match simulate_river_flow(&mut buffer, &mut colored_buffer, river_iterations, erosion_factor, river_amount,river_seed){
-                                Ok(_) => {},
+                            match simulate_river_flow(&mut buffer, &mut colored_buffer, river_iterations, erosion_factor, river_amount, river_seed) {
+                                Ok(_) => {}
                                 Err(e) => {
                                     println!("Error: {}", e);
                                 }
                             }
                         }
+
+                        let mut buffer_3d = vec![0u32; (BIG_IMAGE_SIZE * BIG_IMAGE_SIZE) as usize];
+                        let mut plane = rend::reader::unit_plane(plane_res, plane_res, 0xFFFFFF);
+                        let mut camera = rend::render::Camera {
+                            fov: 90.0,
+                            near: 0.1,
+                            up: Vector4::new(0.0, 1.0, 0.0, 0.0),
+                            far: 1000.0,
+                            position: Vector4::new(0.0, camera_vertical, -25.0, 1.0),
+                            look_at: Vector4::new(0.0, 0.0, 0.0, 1.0),
+                        };
+                        camera.rotate_around_look_at(camera.up, camera_horizontal);
+
+                        // we can prevent cloning if we calculate 3d after we did everything 2d
+
+                        let mut hm = buffer.clone();
+                        let mut cm = colored_buffer.clone();
+
+                        match modifiers::modifiers::scale_image(&mut hm, (plane_res as u32, plane_res as u32), FilterType::Nearest) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                println!("Error: {}", e);
+                            }
+                        }
+                        match modifiers::modifiers::scale_image(&mut cm, (plane_res as u32, plane_res as u32), FilterType::Nearest) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                println!("Error: {}", e);
+                            }
+                        }
+
+                        modifiers::modifiers::displace_plane(&mut plane, &hm, height_3d);
+                        modifiers::modifiers::colorize_plane(&mut plane, &cm);
+                        let rotation = Vector4::new(0.0, 0.0, 0.0, 0.0);
+                        let uni_size = 10.0;
+                        let scale = Vector4::new(uni_size / plane_res as f32, uni_size / plane_res as f32, uni_size / plane_res as f32, 0.0);
+                        let position = Vector4::new(0.0, 1.0, 0.0, 0.0);
+                        rend::render::draw_object(&mut buffer_3d, &plane, (BIG_IMAGE_SIZE as usize, BIG_IMAGE_SIZE as usize), &camera, position, rotation, scale, Some(0x000000));
+                        let buffer_3d_image = modifiers::modifiers::buffer_to_image_buffer_rgb(&buffer_3d, (BIG_IMAGE_SIZE, BIG_IMAGE_SIZE));
+
                         *locked_buffer = buffer.clone();
                         *locked_color_buffer = colored_buffer.clone();
-                        let pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(buffer.into_raw().as_slice(), IMAGE_SIZE, IMAGE_SIZE); 
+                        *locked_3d_buffer = buffer_3d_image.clone();
+                        let pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(buffer.into_raw().as_slice(), IMAGE_SIZE, IMAGE_SIZE);
                         let colored_pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(colored_buffer.into_raw().as_slice(), IMAGE_SIZE, IMAGE_SIZE);
+                        let pixel_3d_buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(buffer_3d_image.into_raw().as_slice(), BIG_IMAGE_SIZE, BIG_IMAGE_SIZE);
                         let weak_copy = handle.clone();
                         match slint::invoke_from_event_loop(move || {
                             let img = slint::Image::from_rgba8(pixel_buffer);
                             let colormap = slint::Image::from_rgba8(colored_pixel_buffer);
+                            let map_3d = slint::Image::from_rgba8(pixel_3d_buffer);
                             let weak = weak_copy.upgrade().unwrap();
                             weak.set_image(img);
                             weak.set_colormap(colormap);
-                        }){
-                            Ok(_) => {},
+                            weak.set_image_perspective(map_3d);
+                        }) {
+                            Ok(_) => {}
                             Err(e) => {
                                 println!("Error: {}", e);
                             }
                         };
                     }
-                    (Err(e), _) => {
+                    (Err(e), _, _) => {
                         println!("Error in Height Buffer: {}", e);
-                    },
-                    (_, Err(e)) => {
+                    }
+                    (_, Err(e), _) => {
                         println!("Error in Color Buffer: {}", e);
+                    }
+                    (_, _, Err(e)) => {
+                        println!("Error in 3D Buffer: {}", e);
                     }
                 }
             });
         }
     });
 
-    app.on_add_layer_btn_clicked(move ||{
+    app.on_add_layer_btn_clicked(move || {
         let clicked_handle = app_add_weak.upgrade().unwrap();
         let model_rc = clicked_handle.get_layers();
         let layers = model_rc.as_any().downcast_ref::<VecModel<LayerParams>>().unwrap();
@@ -472,7 +580,7 @@ fn main() {
         });
     });
 
-    app.on_remove_layer_btn_clicked(move ||{
+    app.on_remove_layer_btn_clicked(move || {
         let clicked_handle = app_remove_weak.upgrade().unwrap();
         let model_rc = clicked_handle.get_layers();
         let layers = model_rc.as_any().downcast_ref::<VecModel<LayerParams>>().unwrap();
@@ -481,14 +589,14 @@ fn main() {
         }
     });
 
-    app.on_load_btn_clicked(move ||{
+    app.on_load_btn_clicked(move || {
         deserialize_tool(&app_load_weak);
     });
 
     app.on_export_btn_clicked(move || {
         let clicked_handle = app_export_weak.upgrade().unwrap();
         let locked_buffer = export_main_buffer.lock().unwrap();
-        let locked_color_buffer = export_main_color_buffer.lock().unwrap();        
+        let locked_color_buffer = export_main_color_buffer.lock().unwrap();
         let mut buffer = locked_buffer.clone();
         let mut color_buffer = locked_color_buffer.clone();
 
@@ -497,46 +605,44 @@ fn main() {
         let export_filter = clicked_handle.get_scale_type() as u32;
 
         let image_size = match export_scale {
-            0 => {IMAGE_SIZE},
-            1 => {IMAGE_SIZE * 2},
-            2 => {IMAGE_SIZE * 4},
-            3 => {IMAGE_SIZE * 8},
-            4 => {IMAGE_SIZE * 16},
-            _ => {IMAGE_SIZE}
+            0 => { IMAGE_SIZE }
+            1 => { IMAGE_SIZE * 2 }
+            2 => { IMAGE_SIZE * 4 }
+            3 => { IMAGE_SIZE * 8 }
+            4 => { IMAGE_SIZE * 16 }
+            _ => { IMAGE_SIZE }
         };
 
         let image_filter = match export_filter {
-            0 => {FilterType::Nearest},
-            1 => {FilterType::Triangle},
-            2 => {FilterType::CatmullRom},
-            3 => {FilterType::Gaussian},
-            4 => {FilterType::Lanczos3},
-            _ => {FilterType::Lanczos3}
+            0 => { FilterType::Nearest }
+            1 => { FilterType::Triangle }
+            2 => { FilterType::CatmullRom }
+            3 => { FilterType::Gaussian }
+            4 => { FilterType::Lanczos3 }
+            _ => { FilterType::Lanczos3 }
         };
 
-        match scale_image(&mut buffer, (image_size,image_size), image_filter){
-            Ok(_) => {},
+        match scale_image(&mut buffer, (image_size, image_size), image_filter) {
+            Ok(_) => {}
             Err(e) => {
                 println!("Error: {}", e);
             }
         }
-        match scale_image(&mut color_buffer, (image_size,image_size), image_filter){
-            Ok(_) => {},
+        match scale_image(&mut color_buffer, (image_size, image_size), image_filter) {
+            Ok(_) => {}
             Err(e) => {
                 println!("Error: {}", e);
             }
         }
         serialize_tool(&app_export_weak);
-        save_image_to_desktop(&buffer, filename.as_str(),"height");
+        save_image_to_desktop(&buffer, filename.as_str(), "height");
         save_image_to_desktop(&color_buffer, filename.as_str(), "color");
     });
     app.run().unwrap();
 }
 
-
-
 #[derive(Serialize, Deserialize)]
-struct SerializedTool{
+struct SerializedTool {
     scale: f64,
     offset_x: f64,
     offset_y: f64,
@@ -558,13 +664,13 @@ struct SerializedTool{
     as_water: bool,
 }
 
-fn deserialize_tool(weak: &slint::Weak<App>){
+fn deserialize_tool(weak: &slint::Weak<App>) {
     let handle = weak.upgrade().unwrap();
     let file_name = handle.get_filename();
     let desktop_path = dirs::desktop_dir();
     match desktop_path {
-        Some(path) =>{
-            let file_path = path.join(format!("{}_config.json",file_name));
+        Some(path) => {
+            let file_path = path.join(format!("{}_config.json", file_name));
             let mut file = match fs::File::open(file_path) {
                 Ok(file) => file,
                 Err(e) => {
@@ -574,7 +680,7 @@ fn deserialize_tool(weak: &slint::Weak<App>){
             };
             let mut contents = String::new();
             match file.read_to_string(&mut contents) {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(e) => {
                     println!("Couldn't read file: {}", e);
                     return;
@@ -626,15 +732,15 @@ fn deserialize_tool(weak: &slint::Weak<App>){
             handle.set_filename(slint::SharedString::from(serialized_tool.filename));
             handle.set_export_scale(serialized_tool.export_scale as i32);
             handle.set_scale_type(serialized_tool.export_filter as i32);
-            handle.set_as_water(serialized_tool.as_water as bool);       
-        },
+            handle.set_as_water(serialized_tool.as_water as bool);
+        }
         None => {
             println!("Couldn't find desktop path");
-        }     
+        }
     }
 }
 
-fn serialize_tool(weak: &slint::Weak<App>){
+fn serialize_tool(weak: &slint::Weak<App>) {
     let handle = weak.upgrade().unwrap();
     let scale = handle.get_scale() as f64;
     let offset_x = handle.get_offset_x() as f64;
@@ -686,27 +792,26 @@ fn serialize_tool(weak: &slint::Weak<App>){
         filename: file_name.to_string(),
         export_scale,
         export_filter,
-        as_water
+        as_water,
     };
 
     let serialized_tool_json = serde_json::to_string_pretty(&serialized_tool).unwrap();
     let desktop_path = dirs::desktop_dir();
     match desktop_path {
-        Some(path) => {            
-            let full_path = path.join(format!("{}_config.json",file_name));
+        Some(path) => {
+            let full_path = path.join(format!("{}_config.json", file_name));
             println!("Desktop path: {}", full_path.display());
             match fs::write(full_path, serialized_tool_json) {
                 Ok(_) => {
                     println!("Tool saved");
-                },
+                }
                 Err(e) => {
                     println!("Couldn't save tool: {}", e);
                 }
             }
-                
-        },
+        }
         None => {
             println!("Couldn't find desktop path");
         }
-    }    
+    }
 }

@@ -5,7 +5,6 @@ use rand::{Rng, SeedableRng};
 use std::error::Error;
 use super::constants::COLORS;
 
-
 pub fn generate_perlin_noise_buffer(width: u32, height: u32, offset_x: f64, offset_y: f64, scale: f64, opacity: f64, seed: u32) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
     let perlin = Perlin::new(seed);
 
